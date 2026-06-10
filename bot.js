@@ -15,7 +15,6 @@ const client = new Client({
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// Register slash commands
 async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
@@ -32,7 +31,6 @@ async function registerCommands() {
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-
   try {
     console.log('Registering slash commands...');
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
@@ -47,63 +45,61 @@ client.once('ready', async () => {
   await registerCommands();
 });
 
-client.on('interactionCreate', async interaction => {
+client.on('interactionCreate', interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== 'catchup') return;
 
-  // Defer ephemerally so only the user sees the response
-  await interaction.deferReply({ ephemeral: true });
+  // Immediately defer — do NOT await anything before this
+  interaction.deferReply({ ephemeral: true }).then(async () => {
+    const messageCount = interaction.options.getInteger('messages') || 50;
 
-  const messageCount = interaction.options.getInteger('messages') || 50;
+    try {
+      const messages = await interaction.channel.messages.fetch({ limit: messageCount });
 
-  try {
-    // Fetch messages from the channel
-    const messages = await interaction.channel.messages.fetch({ limit: messageCount });
-
-    if (messages.size === 0) {
-      return interaction.editReply('No messages found in this channel.');
-    }
-
-    // Format messages oldest-first, skip bot messages
-    const formatted = messages
-      .filter(m => !m.author.bot)
-      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-      .map(m => `${m.author.displayName}: ${m.content}`)
-      .filter(line => line.trim().length > 0)
-      .join('\n');
-
-    if (!formatted) {
-      return interaction.editReply('No readable messages found to summarize.');
-    }
-
-    // Ask Claude for a summary
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      messages: [
-        {
-          role: 'user',
-          content: `Summarize the following Discord conversation concisely. Pull out the key topics, decisions, and anything actionable. Keep it punchy — bullet points are fine. Don't include fluff.\n\n${formatted}`,
-        },
-      ],
-    });
-
-    const summary = response.content[0].text;
-
-    // Split if over Discord's 2000 char limit
-    if (summary.length <= 1900) {
-      await interaction.editReply(`**Catch-up summary (last ${messageCount} messages):**\n\n${summary}`);
-    } else {
-      const chunks = summary.match(/.{1,1900}/gs) || [];
-      await interaction.editReply(`**Catch-up summary (last ${messageCount} messages):**\n\n${chunks[0]}`);
-      for (let i = 1; i < chunks.length; i++) {
-        await interaction.followUp({ content: chunks[i], ephemeral: true });
+      if (messages.size === 0) {
+        return interaction.editReply('No messages found in this channel.');
       }
+
+      const formatted = messages
+        .filter(m => !m.author.bot)
+        .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+        .map(m => `${m.author.displayName}: ${m.content}`)
+        .filter(line => line.trim().length > 0)
+        .join('\n');
+
+      if (!formatted) {
+        return interaction.editReply('No readable messages found to summarize.');
+      }
+
+      const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: `Summarize the following Discord conversation concisely. Pull out the key topics, decisions, and anything actionable. Keep it punchy — bullet points are fine. Don't include fluff.\n\n${formatted}`,
+          },
+        ],
+      });
+
+      const summary = response.content[0].text;
+
+      if (summary.length <= 1900) {
+        await interaction.editReply(`**Catch-up summary (last ${messageCount} messages):**\n\n${summary}`);
+      } else {
+        const chunks = summary.match(/.{1,1900}/gs) || [];
+        await interaction.editReply(`**Catch-up summary (last ${messageCount} messages):**\n\n${chunks[0]}`);
+        for (let i = 1; i < chunks.length; i++) {
+          await interaction.followUp({ content: chunks[i], ephemeral: true });
+        }
+      }
+    } catch (err) {
+      console.error('Error handling /catchup:', err);
+      await interaction.editReply('Something went wrong. Check the bot logs.').catch(console.error);
     }
-  } catch (err) {
-    console.error('Error handling /catchup:', err);
-    await interaction.editReply('Something went wrong. Check the bot logs.');
-  }
+  }).catch(err => {
+    console.error('Failed to defer reply:', err);
+  });
 });
 
 client.login(DISCORD_TOKEN);
