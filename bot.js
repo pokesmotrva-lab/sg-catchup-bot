@@ -24,6 +24,9 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  presence: {
+    status: 'invisible',
+  },
 });
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
